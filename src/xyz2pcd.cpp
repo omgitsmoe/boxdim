@@ -28,6 +28,8 @@ int main (int argc, char* argv[])
 			point.y = y;
 			point.z = z;
 			cloud->insert(cloud->end(),point);
+			// ignore rgb channel values, max 255 chars are ignored or till we find a \n
+			infile.ignore(255, '\n');
 		}
 		infile.close();
 		writer.write(ss.str(),*cloud,true);

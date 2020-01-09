@@ -34,3 +34,6 @@
 #Directories
 /build/
 /include/riegl/
+
+.vs/
+src/out/

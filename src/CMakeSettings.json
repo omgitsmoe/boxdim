@@ -1,0 +1,27 @@
+﻿{
+  "configurations": [
+    {
+      "name": "x64-Debug",
+      "generator": "Ninja",
+      "configurationType": "Debug",
+      "inheritEnvironments": [ "msvc_x64_x64" ],
+      "buildRoot": "${projectDir}\\out\\build\\${name}",
+      "installRoot": "${projectDir}\\out\\install\\${name}",
+      "cmakeCommandArgs": "",
+      "buildCommandArgs": "-v",
+      "ctestCommandArgs": "",
+      "variables": [
+        {
+          "name": "ARMADILLO_INCLUDE_DIR",
+          "value": "E:/SYNC/UBWM MSc/FS 4/Masterarbeit/software/armadillo-9.800.3/include",
+          "type": "PATH"
+        },
+        {
+          "name": "ARMADILLO_LIBRARY",
+          "value": "E:/SYNC/UBWM MSc/FS 4/Masterarbeit/software/armadillo-9.800.3/build/Debug/armadillo.lib",
+          "type": "FILEPATH"
+        }
+      ]
+    }
+  ]
+}

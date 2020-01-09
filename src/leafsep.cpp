@@ -206,12 +206,14 @@ void writeCloudClassifiedByPoint(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, std
 	auto minmax = minmax_element(classifications.begin(),classifications.end());
 	int min = *(minmax.first);
 	int max = *(minmax.second);
-	int colours[max+1][3];
+	// changed from original, since it was using non-constant to create array on stack
+	// now using 1d array on heap to store 2d array -> access with [first dim index * second dim size + second dim index]
+	int *colours = new int[(max+1) * 3];
 	for(int i=0;i<max;i++)
 	{
-		colours[i][0] = rand()%256;
-		colours[i][1] = rand()%256;
-		colours[i][2] = rand()%256;
+		colours[i * 3 + 0] = rand()%256;
+		colours[i * 3 + 1] = rand()%256;
+		colours[i * 3 + 2] = rand()%256;
 	}
 	pcl::PointCloud<pcl::PointXYZRGB>::Ptr out(new pcl::PointCloud<pcl::PointXYZRGB>);
 	//srand(time(NULL));
@@ -221,11 +223,12 @@ void writeCloudClassifiedByPoint(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, std
 		point.x = cloud->points[j].x;
 		point.y = cloud->points[j].y;
 		point.z = cloud->points[j].z;
-		point.r = colours[classifications[j]][0];
-		point.g = colours[classifications[j]][1];
-		point.b = colours[classifications[j]][2];
+		point.r = colours[classifications[j] * 3 + 0];
+		point.g = colours[classifications[j] * 3 + 1];
+		point.b = colours[classifications[j] * 3 + 2];
 		out->insert(out->end(),point);
 	}
+	delete[] colours;
 	writer.write(fname,*out,true);
 }
 
@@ -235,12 +238,12 @@ void writeCloudClassifiedByCluster(std::vector<pcl::PointCloud<pcl::PointXYZ>::P
 	auto minmax = minmax_element(classifications.begin(),classifications.end());
 	int min = *(minmax.first);
 	int max = *(minmax.second);
-	int colours[max+1][3];
-	for(int i=0;i<max;i++)
+	int* colours = new int[(max + 1) * 3];
+	for (int i = 0; i < max; i++)
 	{
-		colours[i][0] = rand()%256;
-		colours[i][1] = rand()%256;
-		colours[i][2] = rand()%256;
+		colours[i * 3 + 0] = rand() % 256;
+		colours[i * 3 + 1] = rand() % 256;
+		colours[i * 3 + 2] = rand() % 256;
 	}
 	pcl::PointCloud<pcl::PointXYZRGB>::Ptr out(new pcl::PointCloud<pcl::PointXYZRGB>);
 	for(int j=0;j<clouds.size();j++)
@@ -251,11 +254,12 @@ void writeCloudClassifiedByCluster(std::vector<pcl::PointCloud<pcl::PointXYZ>::P
 			point.x = clouds[j]->points[k].x;
 			point.y = clouds[j]->points[k].y;
 			point.z = clouds[j]->points[k].z;
-			point.r = colours[classifications[j]][0];
-			point.g = colours[classifications[j]][1];
-			point.b = colours[classifications[j]][2];
+			point.r = colours[classifications[j] * 3 + 0];
+			point.g = colours[classifications[j] * 3 + 1];
+			point.b = colours[classifications[j] * 3 + 2];
 			out->insert(out->end(),point);
 		}
-	}	
+	}
+	delete[] colours;
 	writer.write(fname,*out,true);
 }
