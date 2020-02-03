@@ -30,6 +30,7 @@
 #include "treeseg.h"
 
 #include <numeric>
+#include <set>
 
 #include <boost/algorithm/string/split.hpp>
 #include <boost/algorithm/string/classification.hpp>
@@ -365,11 +366,21 @@ void writeClouds(std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> clouds, std::s
 {
 	pcl::PCDWriter writer;
 	pcl::PointCloud<pcl::PointXYZRGB>::Ptr out(new pcl::PointCloud<pcl::PointXYZRGB>);
+	std::set<int> colours;
 	for(int i=0;i<clouds.size();i++)
 	{
-		int r = rand()%256;
-		int g = rand()%256;
-		int b = rand()%256;
+		// make sure we use unique colours
+		int r, g, b;
+		int rgb;
+		do {
+			r = rand()%256;
+			g = rand()%256;
+			b = rand()%256;
+			// 16 8 0 bit
+			// RRGGBB
+			rgb = (r << 16) | (g << 8) | (b << 0);
+		} while (colours.count(rgb) > 0);
+
 		for(int j=0;j<clouds[i]->points.size();j++)
 		{
 			pcl::PointXYZRGB point;
