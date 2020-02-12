@@ -43,6 +43,7 @@ void writeCloudsSeparated(std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> cloud
 			// RRGGBB
 			rgb = (r << 16) | (g << 8) | (b << 0);
 		} while (colours.count(rgb) > 0);
+		colours.insert(rgb);
 
 		for(int j=0; j<clouds[i]->points.size(); j++)
 		{
@@ -88,6 +89,7 @@ int mergeAndColorizeClouds(const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr
 			// RRGGBB
 			rgb = (r << 16) | (g << 8) | (b << 0);
 		} while (colours.count(rgb) > 0);
+		colours.insert(rgb);
 
 		for(size_t j=0; j<clouds[i]->points.size(); j++)
 		{
@@ -195,9 +197,30 @@ int main(int argc, char* argv[])
 	// those arrays consist of (z coord + z step, average mean dist to nnearest(here 50)
 	// nearest neighbours)
 	std::vector<std::vector<float>> nndata = dNNz(cloud, 50, 2);
+
+	// lambda as compare function for sort
+	auto dnnz_cmp = [](const std::vector<float>& a, const std::vector <float>& b) { return a[1] < b[1]; };
+	std::sort(nndata.begin(), nndata.end(), dnnz_cmp);
+	// find median
+	float med;
+	if (nndata.size() > 1)
+	{
+		med = nndata[0][1];
+	}
+	else if ((nndata.size() % 2) == 0)
+	{
+		med = (nndata[(int)(nndata.size() * 0.5f)][1] + nndata[(int)(nndata.size() * 0.5f) - 1][1]) * 0.5f;
+	}
+	else
+	{
+		med = nndata[(int)(nndata.size() * 0.5f)][1];
+	}
+
 	float nnmax = 0;
 	// find max mean dist to nearest neighbours
-	for (int i = 0; i < nndata.size(); i++) if (nndata[i][1] > nnmax) nnmax = nndata[i][1];
+	// dont take outliers as nnmax; >2*median are considered outliers
+	// done since we might pre-segment the scans and thus getting extreme dNN values
+	for (int i = 0; i < nndata.size(); i++) if (nndata[i][1] > nnmax) nnmax = (nndata[i][1] < (med * 2.0f)) ? nndata[i][1] : nnmax;
 	std::cout << "max dNNz " << nnmax << ", " << std::flush;
 	std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> clusters;
 	// euclideanClustering(cloud, dmax, nmin, clusters)
