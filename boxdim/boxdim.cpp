@@ -905,7 +905,7 @@ int main(int argc, char* argv[])
 	else
 	{
 		std::cout << "Reading from (assumed) ascii file: " << input_filename << std::endl;
-		std::ifstream infile(argv[2]);
+		std::ifstream infile(argv[3]);
 		float x, y, z;
 		while (infile >> x >> y >> z)
 		{

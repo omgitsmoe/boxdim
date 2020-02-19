@@ -380,6 +380,7 @@ void writeClouds(std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> clouds, std::s
 			// RRGGBB
 			rgb = (r << 16) | (g << 8) | (b << 0);
 		} while (colours.count(rgb) > 0);
+		colours.insert(rgb);
 
 		for(int j=0;j<clouds[i]->points.size();j++)
 		{
@@ -884,6 +885,7 @@ void buildTree(std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> &clusters, pcl::
 		if(tmp.size() != 0)
 		{
 			outer.clear();
+
 			for (int m = 0; m < tmp.size(); m++)
 			{
 				treeclusters.push_back(tmp[m]);
