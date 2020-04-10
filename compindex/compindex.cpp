@@ -505,9 +505,10 @@ int main(int argc, char* argv[])
 	{
 
 		std::cout << "Usage: compindex voxelEdgeLength methodName plotCloudFileName treeCloudFileName" << std::endl;
-		std::cout << "       methods: seidel, cc, pcl" << std::endl;
+		std::cout << "       methods: cone, cylinder" << std::endl;
 		return 1;
 	}
+	// Seidel et. al. 2015 used 10cm so 0.1
 	float minEdgeLength = atof(argv[1]);
 	if (minEdgeLength <= 0)
 	{
@@ -519,16 +520,17 @@ int main(int argc, char* argv[])
 	std::string plot_base_name = plot_input_filename.substr(0, plot_input_filename.find_last_of('.'));
 	std::string tree_input_filename(argv[4]);
 	std::string base_name = tree_input_filename.substr(0, tree_input_filename.find_last_of('.'));
+	std::string tree_id = base_name.substr(tree_input_filename.find_last_of('\\') + 1, base_name.length());
 	pcl::PointCloud<pcl::PointXYZ>::Ptr plot_cloud(new pcl::PointCloud<pcl::PointXYZ>);
 	pcl::PointCloud<pcl::PointXYZ>::Ptr tree_cloud(new pcl::PointCloud<pcl::PointXYZ>);
 	std::cout << "Tree cloud: " << std::flush;
 	read_input(tree_input_filename, tree_cloud);
 
 	std::cout << "Plot cloud: " << std::flush;
-	if (file_exists(plot_base_name + "_tree-removed.pcd"))
+	if (file_exists(plot_base_name + "_" + tree_id + "-removed.pcd"))
 	{
 		std::cout << "Reading plot cloud with removed tree! " << std::flush;
-		read_input(plot_base_name + "_tree-removed.pcd", plot_cloud);
+		read_input(plot_base_name + "_" + tree_id + "-removed.pcd", plot_cloud);
 		std::cout << "Done!" << std::endl;
 	}
 	else
@@ -537,8 +539,9 @@ int main(int argc, char* argv[])
 		std::cout << "Removing tree from plot cloud! " << std::flush;
 		diff(plot_cloud, tree_cloud);
 		std::cout << "Done!" << std::endl;
+		std::cout << "Writing plot cl with remtree to " << (plot_base_name + "_" + tree_id + "-removed.pcd") << std::endl;
 		pcl::PCDWriter writer;
-		writer.write(plot_base_name + "_tree-removed.pcd", *plot_cloud, true);
+		writer.write(plot_base_name + "_" + tree_id + "-removed.pcd", *plot_cloud, true);
 	}
 
 	Eigen::Vector3f stemBasePoint;

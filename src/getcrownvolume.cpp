@@ -63,6 +63,10 @@ int main (int argc, char** argv)
 		spatial1DFilter(plot,"x",centroid[0]-c/2,centroid[0]+c/2,xslice);
 		spatial1DFilter(xslice,"y",centroid[1]-c/2,centroid[1]+c/2,yslice);
 		spatial1DFilter(yslice,"z",max[2],min[2]+h,zslice);
+		// for normal forest trees treeseg starts the crown at the top of the
+		// branchless stem, but since we have free standing trees we have to start
+		// basically start the crown at the bottom of the stem biased bz 1m so we dont get any ground
+		// spatial1DFilter(yslice,"z",min[2] + 1,min[2]+h,zslice);
 		*volume += *stem;
 		*volume += *zslice;
 		std::stringstream ss;
