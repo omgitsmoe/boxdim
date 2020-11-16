@@ -123,15 +123,15 @@ void find_stem_base_point(pcl::PointCloud<pcl::PointXYZ>::Ptr tree, Eigen::Vecto
 	float nnmax = 0;
 	for (int i = 0; i < nndata.size(); i++)
 	{
-		if(nndata[i][1] < nnmin) nnmin = nndata[i][1];
-		if(nndata[i][1] > nnmax) nnmax = nndata[i][1];
+		if (nndata[i][1] < nnmin) nnmin = nndata[i][1];
+		if (nndata[i][1] > nnmax) nnmax = nndata[i][1];
 	}
 	float dmax = (nnmax + nnmin) / 2;
 	std::cout << dmax << " dmax" << std::endl;
 	std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> clusters;
 	euclideanClustering(treeZSlice, dmax, 3, clusters);
 	//
-	std::cout << "Region-based segmentation: " << std::flush; 
+	std::cout << "Region-based segmentation: " << std::flush;
 	//int idx = findClosestIdx(tree, clusters, true);
 	int idx = findPrincipalCloudIdx(clusters);
 	std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> regions;
@@ -293,9 +293,10 @@ void find_stem_base_point(pcl::PointCloud<pcl::PointXYZ>::Ptr tree, Eigen::Vecto
 
 // plot_cloud is assumed to have had the tree removed previously
 void kkl(pcl::PointCloud<pcl::PointXYZ>::Ptr plot_cloud,
-		 pcl::PointCloud<pcl::PointXYZ>::Ptr tree_cloud,
-		 const std::string base_name, float voxelEdgeLength,
-		 const Eigen::Vector3f& stemBasePoint)
+	pcl::PointCloud<pcl::PointXYZ>::Ptr tree_cloud,
+	const std::string base_name, float voxelEdgeLength,
+	const Eigen::Vector3f& stemBasePoint,
+	float coneTipHeightInTTH)
 {
 
 	pcl::PointCloud<pcl::PointXYZ> filtered;
@@ -321,7 +322,7 @@ void kkl(pcl::PointCloud<pcl::PointXYZ>::Ptr plot_cloud,
 	// Seidel et al. 2015: search cones fixed at a low height(1.3 m above ground for D i and 20 %
 	// of TTH for D i 60 %) are suitable to describe the competitive pressure
 	// by the surrounding trees based on voxel counts
-	coneTip[2] += 0.6f * treeHeight;
+	coneTip[2] += coneTipHeightInTTH * treeHeight;
 	std::cout << "Cone tip: " << std::endl << coneTip << std::endl;
 
 	constexpr float halfOpeningAngle = 60.0f * 0.5f;
@@ -414,9 +415,9 @@ void kkl(pcl::PointCloud<pcl::PointXYZ>::Ptr plot_cloud,
 
 // plot_cloud is assumed to have had the tree removed previously
 void kkl_cylinder(pcl::PointCloud<pcl::PointXYZ>::Ptr plot_cloud,
-				  pcl::PointCloud<pcl::PointXYZ>::Ptr tree_cloud,
-				  const std::string base_name, float voxelEdgeLength,
-				  const Eigen::Vector3f& stemBasePoint)
+	pcl::PointCloud<pcl::PointXYZ>::Ptr tree_cloud,
+	const std::string base_name, float voxelEdgeLength,
+	const Eigen::Vector3f& stemBasePoint)
 {
 
 	pcl::PointCloud<pcl::PointXYZ> filtered;
@@ -501,11 +502,12 @@ void kkl_cylinder(pcl::PointCloud<pcl::PointXYZ>::Ptr plot_cloud,
 // argv: 0: -, 1: minEdgeLength, 2: method (seidel, cc, pcl) 3: path to input file either ascii or pcd
 int main(int argc, char* argv[])
 {
-	if (argc < 5)
+	if (argc < 6)
 	{
 
-		std::cout << "Usage: compindex voxelEdgeLength methodName plotCloudFileName treeCloudFileName" << std::endl;
+		std::cout << "Usage: compindex voxelEdgeLength methodName coneTipHeight plotCloudFileName treeCloudFileName" << std::endl;
 		std::cout << "       methods: cone, cylinder" << std::endl;
+		std::cout << "       ConeTipHeight: relative to total tree height so 0.2 would be 20% TTH" << std::endl;
 		return 1;
 	}
 	// Seidel et. al. 2015 used 10cm so 0.1
@@ -515,10 +517,16 @@ int main(int argc, char* argv[])
 		std::cout << "Minimal edge length needs to be > 0" << std::endl;
 		return 1;
 	}
+	float coneTipHeightInTTH = atof(argv[3]);
+	if (coneTipHeightInTTH <= 0 || coneTipHeightInTTH > 1)
+	{
+		std::cout << "Cone tip height has to be in the range [0, 1]" << std::endl;
+		return 1;
+	}
 
-	std::string plot_input_filename(argv[3]);
+	std::string plot_input_filename(argv[4]);
 	std::string plot_base_name = plot_input_filename.substr(0, plot_input_filename.find_last_of('.'));
-	std::string tree_input_filename(argv[4]);
+	std::string tree_input_filename(argv[5]);
 	std::string base_name = tree_input_filename.substr(0, tree_input_filename.find_last_of('.'));
 	std::string tree_id = base_name.substr(tree_input_filename.find_last_of('\\') + 1, base_name.length());
 	pcl::PointCloud<pcl::PointXYZ>::Ptr plot_cloud(new pcl::PointCloud<pcl::PointXYZ>);
@@ -566,7 +574,8 @@ int main(int argc, char* argv[])
 	if (strcmp(argv[2], "cone") == 0)
 	{
 		std::cout << "==== COMPUTING KKL USING SEARCH CONE ====" << std::endl;
-		kkl(plot_cloud, tree_cloud, base_name, minEdgeLength, stemBasePoint);
+		std::cout << " -- USING CONE TIP HEIGHT OF " << coneTipHeightInTTH << " * TTH -- " << std::endl;
+		kkl(plot_cloud, tree_cloud, base_name, minEdgeLength, stemBasePoint, coneTipHeightInTTH);
 	}
 	else if (strcmp(argv[2], "cylinder") == 0)
 	{
@@ -575,7 +584,7 @@ int main(int argc, char* argv[])
 	}
 	else
 	{
-		std::cout << "ERROR: Method not found, available methods are seidel, seidel_avx, cc, pcl" << std::endl;
+		std::cout << "ERROR: Method not found, available methods are cone, cylinder" << std::endl;
 	}
 
 	return 0;
