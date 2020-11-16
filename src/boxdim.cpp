@@ -9,6 +9,13 @@
 #include <immintrin.h>  // avx intrinsics
 #include <xmmintrin.h>  // sse intrinsics
 
+// #define CL_TARGET_OPENCL_VERSION 110  // OpenCL c bindings: target other than most-current version (2.2)
+// c bindings #include <CL/opencl.h>
+// c++ compile-time settings for target/min version
+#define CL_HPP_TARGET_OPENCL_VERSION 110
+#define CL_HPP_MINIMUM_OPENCL_VERSION 110
+#include <CL/cl2.hpp>
+
 #include <Eigen/Core>
 
 #include <pcl/common/common.h>
@@ -199,6 +206,225 @@ void box_dim_seidel(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string
 	write_result(voxelsRequired, out_filename);
 }
 
+void box_dim_seidel_gpu(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string base_name, float minEdgeLength)
+{
+	//
+	// OpenCL SETUP
+	//
+
+	// get one of the OpenCL platforms. This is actually a driver you had
+	// previously installed. So platform can be from Nvidia, Intel, AMD....
+	std::vector<cl::Platform> all_platforms;
+	cl::Platform::get(&all_platforms);
+
+	if (all_platforms.size() == 0) {
+		std::cout << " No platforms found. Check OpenCL installation!\n";
+		exit(1);
+	}
+	cl::Platform default_platform = all_platforms[0];
+	std::cout << "Using platform: " << default_platform.getInfo<CL_PLATFORM_NAME>() << "\n";
+
+	// get default device (CPUs, GPUs) of the default platform
+	std::vector<cl::Device> all_devices;
+	default_platform.getDevices(CL_DEVICE_TYPE_ALL, &all_devices);
+	if (all_devices.size() == 0) {
+		std::cout << " No devices found. Check OpenCL installation!\n";
+		exit(1);
+	}
+
+	// use device[1] because that's a GPU; device[0] might be CPU?
+	cl::Device default_device = all_devices[0];
+	std::cout << "Using device: " << default_device.getInfo<CL_DEVICE_NAME>() << "\n";
+
+	// a context is like a "runtime link" to the device and platform;
+	// i.e. communication is possible
+	cl::Context context({ default_device });
+
+	//
+	//
+	//
+
+	Eigen::Vector4f min, max;
+	// get min and max coordinates in each dimension which gives us the AABB
+	pcl::getMinMax3D(*cloud, min, max);
+
+	std::cout << "Min coordinates:\n" << min << "\nMax coordinates:\n" << max << std::endl;
+
+	// get absolute dist between min and max coordinates to get the largest edge
+	// length that we're gonna need for our octree
+	Eigen::Vector4f absDist = (min - max).cwiseAbs();
+
+	//std::cout << "Max edge length 3d:\n" << absDist << std::endl;
+
+	// round abs dist to 2 decimal points
+	float* absDat = absDist.data();  // data returns pointer to C-array
+	for (int i = 0; i < 4; i++)
+	{
+		*absDat = roundf(*absDat * 100.0f) / 100.0f;  // use ceil to always round up so no point can be outside of our max box edge length?
+		++absDat;
+	}
+	absDat = nullptr;
+
+	//std::cout << "Max edge length 3d 2 decs:\n" << absDist << std::endl;
+
+	float maxEdgeLength = absDist.maxCoeff();
+
+	std::cout << "Max edge length: " << maxEdgeLength << std::endl;
+
+	std::vector<float> edgeLengths;
+	edgeLengths.reserve(20);  // prob. never going over 20 subdivisions;
+	float currentEdgeLength = maxEdgeLength;
+	// each octree level the edge length gets halfed, continue until we reach minEdgeLength
+	// dr. seidel minEdgeLength 0.10
+	// edge length at level n (starting at 0, otherwise n-1 when starting at 1) = maxEdgeLength * (1 / 2 ^ n);
+	for (int i = 1; currentEdgeLength >= minEdgeLength; ++i)
+	{
+		edgeLengths.push_back(currentEdgeLength);
+		currentEdgeLength = maxEdgeLength * 1 / (1 << i);
+		//currentEdgeLength /= 2.0f;
+	}
+
+	// print edge lengths
+	std::cout << "Edge lengths:" << std::endl;
+	print_vec(edgeLengths);
+
+	// inverse edge lengths -> multiplying a point's coordinates gives voxel indices for that point
+	std::vector<float> voxelIdxFactors;
+	voxelIdxFactors.reserve(20);  // prob. never going over 20 subdivisions;
+	for (int i = 0; i < edgeLengths.size(); ++i)
+	{
+		voxelIdxFactors.push_back(1.0f / edgeLengths[i]);
+	}
+	std::cout << "Voxel idx factors:" << std::endl;
+	print_vec(voxelIdxFactors);
+
+	//
+	// OpenCL compile program
+	//
+
+	// create the program that we want to execute on the device
+	cl::Program::Sources sources;
+
+	// only pointers can be qualified as __constant in kernel arguments
+	// so int by value etc. is not allowed as const
+	// Constant: A small portion of cached global memory visible by all workers.Use it if you can, read only.
+	// Global : Slow, visible by all, read or write.It is where all your data will end, so some accesses to it are always necessary.
+	// Local : Do you need to share something in a local group ? Use local!Do all your local workers access the same global memory ? Use local!Local memory is only visible inside local workers, and is limited in size, however is very fast.
+	// Private : Memory that is only visible to a worker, consider it like registers.All non defined values are private by default.
+	// What if i want to pass the length of an array? When you don't specify a qualifier in the kernel parameter it typically defaults to constant, which is what you want for those small elements, to have a fast access by all workers.
+	std::string kernel_code =
+		"   void kernel compute_voxel_idx(global const float* points,"
+		"								  global float* vxIdxs,"
+		"								  float vIdxFactor,"
+		"                                 unsigned count) {"
+		"       unsigned ID, Nthreads, ratio, start, stop;"
+		""
+		"       ID = get_global_id(0);"  // Returns the unique global work-item ID value for dimension identified by dimindx =^ thread id
+		"       Nthreads = get_global_size(0);"
+		""
+		"       ratio = (count / Nthreads);"  // number of elements for each thread
+		"       start = ratio * ID;"
+		"       stop  = ratio * (ID + 1);"
+		""
+		"       for (unsigned i=start; i<stop; i++)"
+		"           vxIdxs[i] = round(points[i] * vIdxFactor + 0.5f);"
+		"   }";
+	sources.push_back({ kernel_code.c_str(), kernel_code.length() });
+
+	cl::Program program(context, sources);
+	if (program.build({ default_device }) != CL_SUCCESS) {
+		std::cout << "Error building: " << program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(default_device) << std::endl;
+		exit(1);
+	}
+
+	// create buffers on device (allocate space on GPU)
+	// 16-bytes per pcl::PointXYZ due to sse-friendly alignment
+	cl::Buffer buffer_Points(context, CL_MEM_READ_WRITE, sizeof(float) * 4 * cloud->size());
+	cl::Buffer buffer_vxIdxs(context, CL_MEM_READ_WRITE, sizeof(float) * 4 * cloud->size());
+
+	// create a queue (a queue of commands that the GPU will execute)
+	cl::CommandQueue queue(context, default_device);
+	// KernelFunctor gone use make_kernel for same functionality or use Kernel with setArg and queue.enqueueNDRange...
+	cl::Kernel compute_voxel_idx(program, "compute_voxel_idx");
+	//
+	//
+	//
+
+	// TIMER START
+	auto start = std::chrono::high_resolution_clock::now();
+	//
+	//
+	std::vector<size_t> voxelsRequired;
+	voxelsRequired.reserve(20);
+	struct voxelIdx
+	{
+		float x;
+		float y;
+		float z;
+		// needed for sorting in set
+		bool operator <(const voxelIdx& pt) const
+		{
+			// return (x < pt.x) || ((pt.x < x)) && (y < pt.y)) || ((!(pt.x < x)) && (!(pt.y < y)) && (z < pt.z));
+			return (x < pt.x) || ((x == pt.x) && (y < pt.y)) || ((x == pt.x) && (y == pt.y) && (z < pt.z));
+		}
+	};
+	voxelIdx currentVoxelIdx;
+	std::set<voxelIdx> usedVoxels;
+
+	// push write commands to queue
+	// pcl::PointCloud uses vector for storing the Points and PointXYZ is just a struct with floats xyz and one float for padding to 16 bytes
+	// so we can use a ptr to the start of cloud vector as float array ptr to fill buffer_Points
+	queue.enqueueWriteBuffer(buffer_Points, CL_TRUE, 0, sizeof(float) * 4 * cloud->size(), &(*cloud)[0]);
+	compute_voxel_idx.setArg(0, buffer_Points);
+	compute_voxel_idx.setArg(1, buffer_vxIdxs);
+	// !! IMPORTANT !! doesn't result in an error spent 2 hours looking for this bug
+	// we have to cast size_t to unsigned int
+	// 6.8 k. Arguments to kernel functions in a program cannot be declared with the built-in scalar types bool, half, size_t, ptrdiff_t, intptr_t, and uintptr_t
+	compute_voxel_idx.setArg(3, static_cast<unsigned int>(cloud->size() * 4));  // float count
+	std::vector<float> vxIdxsOut(cloud->size() * 4);
+
+	for (int i = 0; i < edgeLengths.size(); ++i)
+	{
+		// set voxel index factor for this edge length
+		compute_voxel_idx.setArg(2, voxelIdxFactors[i]);
+
+		// kernel, offset, nr of threads
+		queue.enqueueNDRangeKernel(compute_voxel_idx, cl::NullRange, cl::NDRange(300), cl::NullRange);
+		queue.finish();
+
+		// read result from GPU to vxIdxsOut
+		queue.enqueueReadBuffer(buffer_vxIdxs, CL_TRUE, 0, sizeof(float) * 4 * cloud->size(), vxIdxsOut.data());
+		// not needed since we passed CL_TRUE for blocking argument in enqueueReadBuffer // queue.finish();
+		for (size_t j = 0; j < vxIdxsOut.size(); j += 4)
+		{
+			usedVoxels.insert({ vxIdxsOut[j], vxIdxsOut[j + 1], vxIdxsOut[j + 2] });  // last float just padding
+		}
+
+		voxelsRequired.push_back(usedVoxels.size());
+		usedVoxels.clear();
+	}
+	// TIMER END
+	auto stop = std::chrono::high_resolution_clock::now();
+
+	// Subtract stop and start timepoints and 
+	// cast it to required unit. Predefined units 
+	// are nanoseconds, microseconds, milliseconds, 
+	// seconds, minutes, hours. Use duration_cast() 
+	// function. 
+	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
+
+	// To get the value of duration use the count() 
+	// member function on the duration object 
+	std::cout << "GPU TIMING: " << duration.count() << " milliseconds" << std::endl;
+	//
+	std::cout << "Number of used voxels:" << std::endl;
+	print_vec(voxelsRequired);
+
+	std::string out_filename = base_name + "_seidel.csv";
+	std::cout << "Writing output csv: " << out_filename << std::endl;
+	write_result(voxelsRequired, out_filename);
+}
+
 void box_dim_seidel_avx(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string base_name, float minEdgeLength)
 {
 	Eigen::Vector4f min, max;
@@ -329,6 +555,27 @@ void box_dim_seidel_avx(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::st
 	write_result(voxelsRequired, out_filename);
 }
 
+/*
+ SSE version is fastest, since too much overhead in packing and unpacking into 32-byte aligned arrays etc.
+ whereas the pcl::PointXYZ is already alligned for SSE
+
+ NORMAL TIMING: 6797 milliseconds
+ NORMAL TIMING: 6744 milliseconds
+ NORMAL TIMING: 6645 milliseconds
+
+ AVX TIMING: 3327 milliseconds
+ AVX TIMING: 3353 milliseconds
+ AVX TIMING: 3339 milliseconds
+
+ SSE TIMING: 3090 milliseconds
+ SSE TIMING: 3079 milliseconds
+ SSE TIMING: 3081 milliseconds
+
+ even GPU is slower with 700 threads!!
+ GPU TIMING: 3644 milliseconds
+ GPU TIMING: 3809 milliseconds 500 threads
+ GPU TIMING: 4076 milliseconds 300 threads
+*/
 void box_dim_seidel_sse(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string base_name, float minEdgeLength)
 {
 	Eigen::Vector4f min, max;
@@ -442,7 +689,7 @@ void box_dim_seidel_sse(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::st
 
 	// To get the value of duration use the count() 
 	// member function on the duration object 
-	std::cout << "AVX TIMING: " << duration.count() << " milliseconds" << std::endl;
+	std::cout << "SSE TIMING: " << duration.count() << " milliseconds" << std::endl;
 	//
 	std::cout << "Number of used voxels:" << std::endl;
 	print_vec(voxelsRequired);
@@ -658,7 +905,7 @@ int main(int argc, char* argv[])
 	else
 	{
 		std::cout << "Reading from (assumed) ascii file: " << input_filename << std::endl;
-		std::ifstream infile(argv[2]);
+		std::ifstream infile(argv[3]);
 		float x, y, z;
 		while (infile >> x >> y >> z)
 		{
@@ -687,6 +934,11 @@ int main(int argc, char* argv[])
 	{
 		std::cout << "==== USING DR. SEIDEL METHOD WITH SSE INSTRUCTIONS ====" << std::endl;
 		box_dim_seidel_sse(cloud, base_name, minEdgeLength);
+	}
+	else if (strcmp(argv[2], "seidel_gpu") == 0)
+	{
+		std::cout << "==== USING DR. SEIDEL METHOD ON THE GPU ====" << std::endl;
+		box_dim_seidel_gpu(cloud, base_name, minEdgeLength);
 	}
 	else if (strcmp(argv[2], "cc") == 0)
 	{
