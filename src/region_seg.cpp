@@ -4,6 +4,7 @@
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
 #include <pcl/io/pcd_io.h>
+#include <pcl/kdtree/kdtree_flann.h>
 
 #include "treeseg.h"
 
@@ -56,6 +57,82 @@ void writeCloudsSeparated(std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> cloud
 		}
 		writer.write(base_name + padded_nr.str() + ".pcd", *out, true);
 		out->clear();
+	}
+}
+
+// merges clouds into one colouring all points from an origin cloud in the same colour, clears origin clouds by default
+int mergeAndColorizeClouds(const std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr>& clouds, pcl::PointCloud<pcl::PointXYZRGB>::Ptr& out_cloud, bool delete_origin = true)
+{
+	size_t totalPoints = 0;
+	for (auto cloud : clouds) totalPoints += cloud->size();
+	try
+	{
+		(*out_cloud).reserve(totalPoints);
+	}
+	catch (const std::bad_alloc&)
+	{
+		out_cloud->clear();
+		return -1;
+	}
+
+	std::set<int> colours;
+	for (int i = 0; i < clouds.size(); i++)
+	{
+		int r, g, b;
+		int rgb;
+		do {
+			r = rand()%256;
+			g = rand()%256;
+			b = rand()%256;
+			// 16 8 0 bit
+			// RRGGBB
+			rgb = (r << 16) | (g << 8) | (b << 0);
+		} while (colours.count(rgb) > 0);
+
+		for(size_t j=0; j<clouds[i]->points.size(); j++)
+		{
+			pcl::PointXYZRGB point;
+			point.x = clouds[i]->points[j].x;
+			point.y = clouds[i]->points[j].y;
+			point.z = clouds[i]->points[j].z;
+			point.r = r;
+			point.g = g;
+			point.b = b;
+			out_cloud->insert(out_cloud->end(), point);
+		}
+
+		if (delete_origin)
+			clouds[i]->clear();
+	}
+
+	return 0;
+}
+
+// find neares neighbour for all pts in origin and colour them the same colour as the found neares neighbour from other
+void colourFromNearestPtInOtherCloud(pcl::PointCloud<pcl::PointXYZRGB>::Ptr &origin, pcl::PointCloud<pcl::PointXYZRGB>::Ptr &other)
+{
+	pcl::KdTreeFLANN<pcl::PointXYZRGB> kdtreeOther;
+	kdtreeOther.setInputCloud(other);
+
+	int K = 1;  // nr of neighbours to search for
+	// need to be resized to K before passing to nearestKSearch
+	std::vector<int> pointIdxNKNSearch(K);
+	std::vector<float> pointNKNSquaredDistance(K);
+	pcl::PointXYZRGB searchPoint;
+	pcl::PointXYZRGB foundPoint;
+	for(pcl::PointCloud<pcl::PointXYZRGB>::iterator it = origin->begin(); it != origin->end(); it++)
+	{
+		searchPoint.x = it->x;
+		searchPoint.y = it->y;
+		searchPoint.z = it->z;
+		// nr of neighbours found returned
+		if (kdtreeOther.nearestKSearch(searchPoint, K, pointIdxNKNSearch, pointNKNSquaredDistance) > 0)
+		{
+			foundPoint = other->at(pointIdxNKNSearch[0]);
+			it->r = foundPoint.r;
+			it->g = foundPoint.g;
+			it->b = foundPoint.b;
+		}
 	}
 }
 
@@ -142,14 +219,44 @@ int main(int argc, char* argv[])
 	// finds index of cluster whose local minimal point is below a 2 unit range of the global
 	// minimum point in a cloud of all clusters combined
 	int idx = findPrincipalCloudIdx(clusters);
-	writer.write("PCA_CLUSTER.pcd", *clusters[idx], true);
+	// writer.write("PCA_CLUSTER.pcd", *clusters[idx], true);
 	int nnearest = 50;
 	int nmin = 3;
 	float smoothness = atof(argv[3]);
 	regionSegmentation(clusters[idx], nnearest, nmin, smoothness, regions);
-	out_name = base_name + "_ec_region-based-seg.pcd";
 	// BAD IDEA too many files! writeCloudsSeparated(regions, out_name);
-	writeClouds(regions, out_name, false);
+
+	// already in original resolution
+	if (edgelength <= 0)
+	{
+		out_name = base_name + "_ec_region-based-seg.pcd";
+		writeClouds(regions, out_name, false);
+		std::cout << out_name << std::endl;
+		return 0;
+	}
+
+	std::cout << "Done!" << std::endl;
+
+	// clear old stuff to save memory
+	for (auto c : clusters) c->clear();
+	clusters.clear();
+
+	std::cout << "Merging regions into one cloud coloured by their region!" << std::endl;
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr mergedRegions(new pcl::PointCloud<pcl::PointXYZRGB>);
+	mergeAndColorizeClouds(regions, mergedRegions);  // already clears input clouds
+	regions.clear();
+
+	std::cout << "Loading original point cloud!" << std::endl;
+	// load cloud in orginal resolution and infer regions from downsampled cloud
+	// by finding a point's nearest neighbour
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr original(new pcl::PointCloud<pcl::PointXYZRGB>);
+	reader.read(argv[2], *original);
+
+	std::cout << "Infering point region colours by using a nearest neighbour search!" << std::endl;
+	colourFromNearestPtInOtherCloud(original, mergedRegions);
+	std::cout << "Writing output cloud in original resolutin: ";
+	out_name = base_name + "_ec_region-based-seg_orig.pcd";
+	writer.write(out_name, *original, true);
 	std::cout << out_name << std::endl;
 
 	return 0;
