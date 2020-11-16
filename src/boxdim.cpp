@@ -23,6 +23,8 @@
 #include <pcl/octree/octree_pointcloud_occupancy.h>
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
+#include <pcl/filters/crop_box.h>
+#include <pcl/filters/passthrough.h>
 #include <pcl/io/pcd_io.h>
 
 template<typename T>
@@ -36,14 +38,15 @@ void print_vec(const std::vector<T>& vec)
 	std::cout << "]" << std::endl;
 }
 
-void write_result(const std::vector<size_t>& voxelsRequired, const std::string& out_filename)
+void write_result(const std::vector<float>& edgeLengths, const std::vector<size_t>& voxelsRequired, const std::string& out_filename)
 {
 	// standard RFC 4180 uses comma as separator
 	std::ofstream outfile(out_filename);
 	for (int i = 0; i < voxelsRequired.size(); ++i)
 	{
 		// use left-shift instead of 2^i
-		outfile << log(1 << i) << ", " << log((double)voxelsRequired[i]) << std::endl;
+		// outfile << log(1 << i) << ", " << log((double)voxelsRequired[i]) << std::endl;
+		outfile << edgeLengths[i] << ", " << voxelsRequired[i] << std::endl;
 	}
 	outfile.close();
 }
@@ -108,7 +111,7 @@ void box_dim_seidel(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string
 	// relation of edge length to max edge length
 	// these are just constants, since we just half the edge length each octree level
 	// relative edge length on level n = 1 / 2 ^ n;
-	float relEdgeLengths[] = {   1.0f, 0.5f, 0.25f, 0.125f, 0.0625f, 0.03125f, 0.015625f, 0.0078125f, 0.00390625f,
+	float relEdgeLengths[] = { 1.0f, 0.5f, 0.25f, 0.125f, 0.0625f, 0.03125f, 0.015625f, 0.0078125f, 0.00390625f,
 								 0.001953125f, 0.0009765625f, 0.00048828125f, 0.000244140625f,
 								 0.0001220703125f, 0.00006103515625f, 0.00003051757813f, 0.00001525878906f,
 								 0.000007629394531f, 0.000003814697266f, 0.000001907348633f,
@@ -203,7 +206,7 @@ void box_dim_seidel(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string
 
 	std::string out_filename = base_name + "_seidel.csv";
 	std::cout << "Writing output csv: " << out_filename << std::endl;
-	write_result(voxelsRequired, out_filename);
+	write_result(edgeLengths, voxelsRequired, out_filename);
 }
 
 void box_dim_seidel_gpu(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string base_name, float minEdgeLength)
@@ -422,7 +425,7 @@ void box_dim_seidel_gpu(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::st
 
 	std::string out_filename = base_name + "_seidel.csv";
 	std::cout << "Writing output csv: " << out_filename << std::endl;
-	write_result(voxelsRequired, out_filename);
+	write_result(edgeLengths, voxelsRequired, out_filename);
 }
 
 void box_dim_seidel_avx(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string base_name, float minEdgeLength)
@@ -526,8 +529,8 @@ void box_dim_seidel_avx(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::st
 			// wrong type since we only need float* and not float[8]*
 			_mm256_store_ps(&twoPtCoords[0], r);
 			//std::cout << "VoxelIDX: " << twoPtCoords[0] << " " << twoPtCoords[1] << " " << twoPtCoords[2] << std::endl;
-			usedVoxels.insert({twoPtCoords[0], twoPtCoords[1], twoPtCoords[2]});
-			usedVoxels.insert({twoPtCoords[3], twoPtCoords[4], twoPtCoords[5]});
+			usedVoxels.insert({ twoPtCoords[0], twoPtCoords[1], twoPtCoords[2] });
+			usedVoxels.insert({ twoPtCoords[3], twoPtCoords[4], twoPtCoords[5] });
 		}
 
 		voxelsRequired.push_back(usedVoxels.size());
@@ -552,7 +555,7 @@ void box_dim_seidel_avx(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::st
 
 	std::string out_filename = base_name + "_seidel.csv";
 	std::cout << "Writing output csv: " << out_filename << std::endl;
-	write_result(voxelsRequired, out_filename);
+	write_result(edgeLengths, voxelsRequired, out_filename);
 }
 
 /*
@@ -657,16 +660,12 @@ void box_dim_seidel_sse(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::st
 		for (size_t pi = 0; pi < cloud->size(); ++pi)
 		{
 			// dr. seidel method
-			pcl::PointXYZ* pt1 = &(*cloud)[pi];
-			pcl::PointXYZ* pt2 = &(*cloud)[pi + 1];
 			// pcl::PointXYZ is already 16-byte aligned for SSE friendliness
-			__m128 ptxyz = _mm_load_ps( reinterpret_cast<const float *>(&(*cloud)[pi]) );
+			__m128 ptxyz = _mm_load_ps(reinterpret_cast<const float*>(&(*cloud)[pi]));
 			__m128 r = _mm_mul_ps(ptxyz, vIdxF);
 			r = _mm_add_ps(r, halfScalar);
 			// (_MM_FROUND_TO_NEAREST_INT |_MM_FROUND_NO_EXC) // round to nearest, and suppress exceptions
 			r = _mm_round_ps(r, (_MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-			// store values from register in float array since we use 256-bit registers the float array
-			// needs to be 32-byte aligned
 			// need to pass pointer to first float in float array otherwise compiler complains about
 			// wrong type since we only need float* and not float[8]*
 			_mm_store_ps(reinterpret_cast<float*>(&currentVoxelIdx), r);
@@ -696,7 +695,157 @@ void box_dim_seidel_sse(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::st
 
 	std::string out_filename = base_name + "_seidel.csv";
 	std::cout << "Writing output csv: " << out_filename << std::endl;
-	write_result(voxelsRequired, out_filename);
+	write_result(edgeLengths, voxelsRequired, out_filename);
+}
+
+void box_dim_seidel_sse_treetop(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string base_name, float minEdgeLength)
+{
+	Eigen::Vector4f min, max;
+	// get min and max coordinates in each dimension which gives us the AABB
+	pcl::getMinMax3D(*cloud, min, max);
+
+	std::cout << "Min coordinates:\n" << min << "\nMax coordinates:\n" << max << std::endl;
+
+	pcl::PointCloud<pcl::PointXYZ>::Ptr zFilteredCloud(new pcl::PointCloud<pcl::PointXYZ>);
+	// filter out lower 2/3 of the cloud in z/height
+	pcl::PassThrough<pcl::PointXYZ> pass;
+	pass.setInputCloud(cloud);
+	pass.setFilterFieldName("z");
+	float zmin = max.z() - 1.0f / 3.0f * (max.z() - min.z());
+	std::cout << zmin << std::endl;
+	pass.setFilterLimits(zmin, max.z());
+	pass.filter(*zFilteredCloud);
+
+	// swap target of shared_ptr (zFilteredCloud now points to the original cloud)
+	cloud.swap(zFilteredCloud);
+	zFilteredCloud.reset();  // swaps internal value it points to with nothing
+	// re-compute min and max
+	pcl::getMinMax3D(*cloud, min, max);
+
+	std::cout << "New Min/Max after z filter:\nMin coordinates:\n" << min << "\nMax coordinates:\n" << max << std::endl;
+
+	// get absolute dist between min and max coordinates to get the largest edge
+	// length that we're gonna need for our octree
+	Eigen::Vector4f absDist = (min - max).cwiseAbs();
+
+	//std::cout << "Max edge length 3d:\n" << absDist << std::endl;
+
+	// cloud already starts at 2/3 height since we filtered it before
+	float mid_x = min.x() + (absDist.x() * 0.5f);
+	float mid_y = min.y() + (absDist.y() * 0.5f);
+	std::cout << "Mid x/y 2/3 z:" << mid_x << " " << mid_y << " " << min.z() << std::endl;
+	float half_edge_length = 0.5f * absDist.z();
+
+	// Eigen::Vector4f(maxX, maxY, maxZ, 1.0)
+	min = { mid_x - half_edge_length, mid_y - half_edge_length, min.z(), 1.0f };
+	max = { mid_x + half_edge_length, mid_y + half_edge_length, max.z(), 1.0f };
+
+	std::cout << "Cropping cloud to\nMin:\n" << min << std::endl << "Max:\n" << max << std::endl;
+
+	pcl::PointCloud<pcl::PointXYZ>::Ptr croppedCloud(new pcl::PointCloud<pcl::PointXYZ>);
+	// crop cloud to the top third in z and 0.5*height_third around middle x/y point 
+	pcl::CropBox<pcl::PointXYZ> boxFilter;
+	boxFilter.setMin(min);
+	boxFilter.setMax(max);
+	boxFilter.setInputCloud(cloud);
+	boxFilter.filter(*croppedCloud);
+
+	// use cropped cloud
+	cloud.swap(croppedCloud);
+	croppedCloud.reset();
+
+	float maxEdgeLength = absDist.z();
+
+	std::cout << "Max edge length: " << maxEdgeLength << std::endl;
+
+	std::vector<float> edgeLengths;
+	edgeLengths.reserve(20);  // prob. never going over 20 subdivisions;
+	float currentEdgeLength = maxEdgeLength;
+	// each octree level the edge length gets halfed, continue until we reach minEdgeLength
+	// dr. seidel minEdgeLength 0.10
+	// edge length at level n (starting at 0, otherwise n-1 when starting at 1) = maxEdgeLength * (1 / 2 ^ n);
+	for (int i = 1; currentEdgeLength >= minEdgeLength; ++i)
+	{
+		edgeLengths.push_back(currentEdgeLength);
+		currentEdgeLength = maxEdgeLength * 1 / (1 << i);
+		//currentEdgeLength /= 2.0f;
+	}
+
+	// print edge lengths
+	std::cout << "Edge lengths:" << std::endl;
+	print_vec(edgeLengths);
+
+	// inverse edge lengths -> multiplying a point's coordinates gives voxel indices for that point
+	std::vector<float> voxelIdxFactors;
+	voxelIdxFactors.reserve(20);  // prob. never going over 20 subdivisions;
+	for (int i = 0; i < edgeLengths.size(); ++i)
+	{
+		voxelIdxFactors.push_back(1.0f / edgeLengths[i]);
+	}
+	std::cout << "Voxel idx factors:" << std::endl;
+	print_vec(voxelIdxFactors);
+
+	// TIME START
+	auto start = std::chrono::high_resolution_clock::now();
+	//
+	std::vector<size_t> voxelsRequired;
+	voxelsRequired.reserve(20);
+
+	// needed for sorting in set
+	auto ptxyzLess = [](const pcl::PointXYZ& lhs, const pcl::PointXYZ& rhs)
+	{
+		// return (x < pt.x) || ((pt.x < x)) && (y < pt.y)) || ((!(pt.x < x)) && (!(pt.y < y)) && (z < pt.z));
+		return (lhs.x < rhs.x) || ((lhs.x == rhs.x) && (lhs.y < rhs.y)) || ((lhs.x == rhs.x) && (lhs.y == rhs.y) && (lhs.z < rhs.z));
+	};
+
+	pcl::PointXYZ currentVoxelIdx;
+	// type of comparator needed, so use decltype to get type of lambda
+	// comparator function also needs to be passed to constructor!
+	std::set<pcl::PointXYZ, decltype(ptxyzLess)> usedVoxels(ptxyzLess);
+	// set_ps is backwards!! (depending on how u look at it; since intel uses little-endian)
+	__m128 halfScalar = _mm_set_ps(0, 0.5f, 0.5f, 0.5f);
+	for (int i = 0; i < edgeLengths.size(); ++i)
+	{
+		__m128 vIdxF = _mm_set_ps(0, voxelIdxFactors[i], voxelIdxFactors[i], voxelIdxFactors[i]);
+		for (size_t pi = 0; pi < cloud->size(); ++pi)
+		{
+			// dr. seidel method
+			// pcl::PointXYZ is already 16-byte aligned for SSE friendliness
+			__m128 ptxyz = _mm_load_ps(reinterpret_cast<const float*>(&(*cloud)[pi]));
+			__m128 r = _mm_mul_ps(ptxyz, vIdxF);
+			r = _mm_add_ps(r, halfScalar);
+			// (_MM_FROUND_TO_NEAREST_INT |_MM_FROUND_NO_EXC) // round to nearest, and suppress exceptions
+			r = _mm_round_ps(r, (_MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+			// need to pass pointer to first float in float array otherwise compiler complains about
+			// wrong type since we only need float* and not float[8]*
+			_mm_store_ps(reinterpret_cast<float*>(&currentVoxelIdx), r);
+			//std::cout << "VoxelIDX: " << twoPtCoords[0] << " " << twoPtCoords[1] << " " << twoPtCoords[2] << std::endl;
+			usedVoxels.insert(currentVoxelIdx);
+		}
+
+		voxelsRequired.push_back(usedVoxels.size());
+		usedVoxels.clear();
+	}
+	// TIMER END
+	auto stop = std::chrono::high_resolution_clock::now();
+
+	// Subtract stop and start timepoints and 
+	// cast it to required unit. Predefined units 
+	// are nanoseconds, microseconds, milliseconds, 
+	// seconds, minutes, hours. Use duration_cast() 
+	// function. 
+	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
+
+	// To get the value of duration use the count() 
+	// member function on the duration object 
+	std::cout << "SSE TIMING: " << duration.count() << " milliseconds" << std::endl;
+	//
+	std::cout << "Number of used voxels:" << std::endl;
+	print_vec(voxelsRequired);
+
+	std::string out_filename = base_name + "_seidel_treetop.csv";
+	std::cout << "Writing output csv: " << out_filename << std::endl;
+	write_result(edgeLengths, voxelsRequired, out_filename);
 }
 
 void box_dim_cc(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string base_name, float minEdgeLength)
@@ -803,7 +952,7 @@ void box_dim_cc(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string bas
 
 	std::string out_filename = base_name + "_cc.csv";
 	std::cout << "Writing output csv: " << out_filename << std::endl;
-	write_result(voxelsRequired, out_filename);
+	write_result(edgeLengths, voxelsRequired, out_filename);
 }
 
 void box_dim_pcl(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string base_name, float minEdgeLength)
@@ -893,6 +1042,8 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 
+	auto start = std::chrono::high_resolution_clock::now();
+
 	std::string input_filename(argv[3]);
 	std::string base_name = input_filename.substr(0, input_filename.find_last_of('.'));
 	pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
@@ -935,6 +1086,11 @@ int main(int argc, char* argv[])
 		std::cout << "==== USING DR. SEIDEL METHOD WITH SSE INSTRUCTIONS ====" << std::endl;
 		box_dim_seidel_sse(cloud, base_name, minEdgeLength);
 	}
+	else if (strcmp(argv[2], "seidel_sse_treetop") == 0)
+	{
+		std::cout << "==== USING DR. SEIDEL METHOD WITH SSE INSTRUCTIONS ====" << std::endl;
+		box_dim_seidel_sse_treetop(cloud, base_name, minEdgeLength);
+	}
 	else if (strcmp(argv[2], "seidel_gpu") == 0)
 	{
 		std::cout << "==== USING DR. SEIDEL METHOD ON THE GPU ====" << std::endl;
@@ -952,8 +1108,18 @@ int main(int argc, char* argv[])
 	}
 	else
 	{
-		std::cout << "ERROR: Method not found, available methods are seidel, seidel_avx, cc, pcl" << std::endl;
+		std::cout << "ERROR: Method not found, available methods are seidel, seidel_sse, seidel_sse_treetop, seidel_avx, seidel_gpu, cc, pcl" << std::endl;
 	}
+
+	auto stop = std::chrono::high_resolution_clock::now();
+
+	// Subtract stop and start timepoints and 
+	// cast it to required unit. Predefined units 
+	// are nanoseconds, microseconds, milliseconds, 
+	// seconds, minutes, hours. Use duration_cast() 
+	// function. 
+	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
+	std::cout << "TOTAL TIMING: " << duration.count() << " milliseconds" << std::endl;
 	//// find min/max coordinates manually
 	//float min_x, min_y, min_z;
 	//min_x = min_y = min_z = std::numeric_limits<float>::max();
