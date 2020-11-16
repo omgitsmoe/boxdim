@@ -4,6 +4,10 @@
 #include <string>
 #include <set>
 #include <limits>
+#include <chrono>  // for function timer
+
+#include <immintrin.h>  // avx intrinsics
+#include <xmmintrin.h>  // sse intrinsics
 
 #include <Eigen/Core>
 
@@ -132,6 +136,9 @@ void box_dim_seidel(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string
 	std::cout << "Voxel idx factors:" << std::endl;
 	print_vec(voxelIdxFactors);
 
+	// TIMER START
+	auto start = std::chrono::high_resolution_clock::now();
+	//
 	std::vector<size_t> voxelsRequired;
 	voxelsRequired.reserve(20);
 	// can't store c array in STL container since it needs to be copyable and assignable
@@ -170,6 +177,273 @@ void box_dim_seidel(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string
 		voxelsRequired.push_back(usedVoxels.size());
 		usedVoxels.clear();
 	}
+	// TIMER END
+	auto stop = std::chrono::high_resolution_clock::now();
+
+	// Subtract stop and start timepoints and 
+	// cast it to required unit. Predefined units 
+	// are nanoseconds, microseconds, milliseconds, 
+	// seconds, minutes, hours. Use duration_cast() 
+	// function. 
+	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
+
+	// To get the value of duration use the count() 
+	// member function on the duration object 
+	std::cout << "NORMAL TIMING: " << duration.count() << " milliseconds" << std::endl;
+	//
+	std::cout << "Number of used voxels:" << std::endl;
+	print_vec(voxelsRequired);
+
+	std::string out_filename = base_name + "_seidel.csv";
+	std::cout << "Writing output csv: " << out_filename << std::endl;
+	write_result(voxelsRequired, out_filename);
+}
+
+void box_dim_seidel_avx(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string base_name, float minEdgeLength)
+{
+	Eigen::Vector4f min, max;
+	// get min and max coordinates in each dimension which gives us the AABB
+	pcl::getMinMax3D(*cloud, min, max);
+
+	std::cout << "Min coordinates:\n" << min << "\nMax coordinates:\n" << max << std::endl;
+
+	// get absolute dist between min and max coordinates to get the largest edge
+	// length that we're gonna need for our octree
+	Eigen::Vector4f absDist = (min - max).cwiseAbs();
+
+	//std::cout << "Max edge length 3d:\n" << absDist << std::endl;
+
+	// round abs dist to 2 decimal points
+	float* absDat = absDist.data();  // data returns pointer to C-array
+	for (int i = 0; i < 4; i++)
+	{
+		*absDat = roundf(*absDat * 100.0f) / 100.0f;  // use ceil to always round up so no point can be outside of our max box edge length?
+		++absDat;
+	}
+	absDat = nullptr;
+
+	//std::cout << "Max edge length 3d 2 decs:\n" << absDist << std::endl;
+
+	float maxEdgeLength = absDist.maxCoeff();
+
+	std::cout << "Max edge length: " << maxEdgeLength << std::endl;
+
+	std::vector<float> edgeLengths;
+	edgeLengths.reserve(20);  // prob. never going over 20 subdivisions;
+	float currentEdgeLength = maxEdgeLength;
+	// each octree level the edge length gets halfed, continue until we reach minEdgeLength
+	// dr. seidel minEdgeLength 0.10
+	// edge length at level n (starting at 0, otherwise n-1 when starting at 1) = maxEdgeLength * (1 / 2 ^ n);
+	for (int i = 1; currentEdgeLength >= minEdgeLength; ++i)
+	{
+		edgeLengths.push_back(currentEdgeLength);
+		currentEdgeLength = maxEdgeLength * 1 / (1 << i);
+		//currentEdgeLength /= 2.0f;
+	}
+
+	// print edge lengths
+	std::cout << "Edge lengths:" << std::endl;
+	print_vec(edgeLengths);
+
+	// inverse edge lengths -> multiplying a point's coordinates gives voxel indices for that point
+	std::vector<float> voxelIdxFactors;
+	voxelIdxFactors.reserve(20);  // prob. never going over 20 subdivisions;
+	for (int i = 0; i < edgeLengths.size(); ++i)
+	{
+		voxelIdxFactors.push_back(1.0f / edgeLengths[i]);
+	}
+	std::cout << "Voxel idx factors:" << std::endl;
+	print_vec(voxelIdxFactors);
+
+	// TIME START
+	auto start = std::chrono::high_resolution_clock::now();
+	//
+	std::vector<size_t> voxelsRequired;
+	voxelsRequired.reserve(20);
+	// can't store c array in STL container since it needs to be copyable and assignable
+	// use struct instead, but then we need to define < opertor since std::set
+	// uses std::less<T> by default; but we could also pass our own comparator function to
+	// std::set<T, compFunc>
+	struct voxelIdx
+	{
+		float x;
+		float y;
+		float z;
+		// needed for sorting in set
+		bool operator <(const voxelIdx& pt) const
+		{
+			// return (x < pt.x) || ((pt.x < x)) && (y < pt.y)) || ((!(pt.x < x)) && (!(pt.y < y)) && (z < pt.z));
+			return (x < pt.x) || ((x == pt.x) && (y < pt.y)) || ((x == pt.x) && (y == pt.y) && (z < pt.z));
+		}
+	};
+	// needs to be 32-byte aligned since we use 256-bit avx registers
+	alignas(32) float twoPtCoords[8];
+	std::set<voxelIdx> usedVoxels;
+	// set_ps is backwards!! (depending on how u look at it; since intel uses little-endian)
+	__m256 halfScalar = _mm256_set_ps(0, 0, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f);
+	for (int i = 0; i < edgeLengths.size(); ++i)
+	{
+		__m256 vIdxF = _mm256_set_ps(0, 0, voxelIdxFactors[i], voxelIdxFactors[i], voxelIdxFactors[i], voxelIdxFactors[i], voxelIdxFactors[i], voxelIdxFactors[i]);
+		for (size_t pi = 0; pi < cloud->size(); pi += 2)
+		{
+			// dr. seidel method
+			pcl::PointXYZ* pt1 = &(*cloud)[pi];
+			pcl::PointXYZ* pt2 = &(*cloud)[pi + 1];
+			__m256 ptxyz = _mm256_set_ps(0, 0, pt2->z, pt2->y, pt2->x, pt1->z, pt1->y, pt1->x);
+			__m256 r = _mm256_mul_ps(ptxyz, vIdxF);
+			r = _mm256_add_ps(r, halfScalar);
+			// (_MM_FROUND_TO_NEAREST_INT |_MM_FROUND_NO_EXC) // round to nearest, and suppress exceptions
+			r = _mm256_round_ps(r, (_MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+			// store values from register in float array since we use 256-bit registers the float array
+			// needs to be 32-byte aligned
+			// need to pass pointer to first float in float array otherwise compiler complains about
+			// wrong type since we only need float* and not float[8]*
+			_mm256_store_ps(&twoPtCoords[0], r);
+			//std::cout << "VoxelIDX: " << twoPtCoords[0] << " " << twoPtCoords[1] << " " << twoPtCoords[2] << std::endl;
+			usedVoxels.insert({twoPtCoords[0], twoPtCoords[1], twoPtCoords[2]});
+			usedVoxels.insert({twoPtCoords[3], twoPtCoords[4], twoPtCoords[5]});
+		}
+
+		voxelsRequired.push_back(usedVoxels.size());
+		usedVoxels.clear();
+	}
+	// TIMER END
+	auto stop = std::chrono::high_resolution_clock::now();
+
+	// Subtract stop and start timepoints and 
+	// cast it to required unit. Predefined units 
+	// are nanoseconds, microseconds, milliseconds, 
+	// seconds, minutes, hours. Use duration_cast() 
+	// function. 
+	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
+
+	// To get the value of duration use the count() 
+	// member function on the duration object 
+	std::cout << "AVX TIMING: " << duration.count() << " milliseconds" << std::endl;
+	//
+	std::cout << "Number of used voxels:" << std::endl;
+	print_vec(voxelsRequired);
+
+	std::string out_filename = base_name + "_seidel.csv";
+	std::cout << "Writing output csv: " << out_filename << std::endl;
+	write_result(voxelsRequired, out_filename);
+}
+
+void box_dim_seidel_sse(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string base_name, float minEdgeLength)
+{
+	Eigen::Vector4f min, max;
+	// get min and max coordinates in each dimension which gives us the AABB
+	pcl::getMinMax3D(*cloud, min, max);
+
+	std::cout << "Min coordinates:\n" << min << "\nMax coordinates:\n" << max << std::endl;
+
+	// get absolute dist between min and max coordinates to get the largest edge
+	// length that we're gonna need for our octree
+	Eigen::Vector4f absDist = (min - max).cwiseAbs();
+
+	//std::cout << "Max edge length 3d:\n" << absDist << std::endl;
+
+	// round abs dist to 2 decimal points
+	float* absDat = absDist.data();  // data returns pointer to C-array
+	for (int i = 0; i < 4; i++)
+	{
+		*absDat = roundf(*absDat * 100.0f) / 100.0f;  // use ceil to always round up so no point can be outside of our max box edge length?
+		++absDat;
+	}
+	absDat = nullptr;
+
+	//std::cout << "Max edge length 3d 2 decs:\n" << absDist << std::endl;
+
+	float maxEdgeLength = absDist.maxCoeff();
+
+	std::cout << "Max edge length: " << maxEdgeLength << std::endl;
+
+	std::vector<float> edgeLengths;
+	edgeLengths.reserve(20);  // prob. never going over 20 subdivisions;
+	float currentEdgeLength = maxEdgeLength;
+	// each octree level the edge length gets halfed, continue until we reach minEdgeLength
+	// dr. seidel minEdgeLength 0.10
+	// edge length at level n (starting at 0, otherwise n-1 when starting at 1) = maxEdgeLength * (1 / 2 ^ n);
+	for (int i = 1; currentEdgeLength >= minEdgeLength; ++i)
+	{
+		edgeLengths.push_back(currentEdgeLength);
+		currentEdgeLength = maxEdgeLength * 1 / (1 << i);
+		//currentEdgeLength /= 2.0f;
+	}
+
+	// print edge lengths
+	std::cout << "Edge lengths:" << std::endl;
+	print_vec(edgeLengths);
+
+	// inverse edge lengths -> multiplying a point's coordinates gives voxel indices for that point
+	std::vector<float> voxelIdxFactors;
+	voxelIdxFactors.reserve(20);  // prob. never going over 20 subdivisions;
+	for (int i = 0; i < edgeLengths.size(); ++i)
+	{
+		voxelIdxFactors.push_back(1.0f / edgeLengths[i]);
+	}
+	std::cout << "Voxel idx factors:" << std::endl;
+	print_vec(voxelIdxFactors);
+
+	// TIME START
+	auto start = std::chrono::high_resolution_clock::now();
+	//
+	std::vector<size_t> voxelsRequired;
+	voxelsRequired.reserve(20);
+
+	// needed for sorting in set
+	auto ptxyzLess = [](const pcl::PointXYZ& lhs, const pcl::PointXYZ& rhs)
+	{
+		// return (x < pt.x) || ((pt.x < x)) && (y < pt.y)) || ((!(pt.x < x)) && (!(pt.y < y)) && (z < pt.z));
+		return (lhs.x < rhs.x) || ((lhs.x == rhs.x) && (lhs.y < rhs.y)) || ((lhs.x == rhs.x) && (lhs.y == rhs.y) && (lhs.z < rhs.z));
+	};
+
+	pcl::PointXYZ currentVoxelIdx;
+	// type of comparator needed, so use decltype to get type of lambda
+	// comparator function also needs to be passed to constructor!
+	std::set<pcl::PointXYZ, decltype(ptxyzLess)> usedVoxels(ptxyzLess);
+	// set_ps is backwards!! (depending on how u look at it; since intel uses little-endian)
+	__m128 halfScalar = _mm_set_ps(0, 0.5f, 0.5f, 0.5f);
+	for (int i = 0; i < edgeLengths.size(); ++i)
+	{
+		__m128 vIdxF = _mm_set_ps(0, voxelIdxFactors[i], voxelIdxFactors[i], voxelIdxFactors[i]);
+		for (size_t pi = 0; pi < cloud->size(); ++pi)
+		{
+			// dr. seidel method
+			pcl::PointXYZ* pt1 = &(*cloud)[pi];
+			pcl::PointXYZ* pt2 = &(*cloud)[pi + 1];
+			// pcl::PointXYZ is already 16-byte aligned for SSE friendliness
+			__m128 ptxyz = _mm_load_ps( reinterpret_cast<const float *>(&(*cloud)[pi]) );
+			__m128 r = _mm_mul_ps(ptxyz, vIdxF);
+			r = _mm_add_ps(r, halfScalar);
+			// (_MM_FROUND_TO_NEAREST_INT |_MM_FROUND_NO_EXC) // round to nearest, and suppress exceptions
+			r = _mm_round_ps(r, (_MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+			// store values from register in float array since we use 256-bit registers the float array
+			// needs to be 32-byte aligned
+			// need to pass pointer to first float in float array otherwise compiler complains about
+			// wrong type since we only need float* and not float[8]*
+			_mm_store_ps(reinterpret_cast<float*>(&currentVoxelIdx), r);
+			//std::cout << "VoxelIDX: " << twoPtCoords[0] << " " << twoPtCoords[1] << " " << twoPtCoords[2] << std::endl;
+			usedVoxels.insert(currentVoxelIdx);
+		}
+
+		voxelsRequired.push_back(usedVoxels.size());
+		usedVoxels.clear();
+	}
+	// TIMER END
+	auto stop = std::chrono::high_resolution_clock::now();
+
+	// Subtract stop and start timepoints and 
+	// cast it to required unit. Predefined units 
+	// are nanoseconds, microseconds, milliseconds, 
+	// seconds, minutes, hours. Use duration_cast() 
+	// function. 
+	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
+
+	// To get the value of duration use the count() 
+	// member function on the duration object 
+	std::cout << "AVX TIMING: " << duration.count() << " milliseconds" << std::endl;
+	//
 	std::cout << "Number of used voxels:" << std::endl;
 	print_vec(voxelsRequired);
 
@@ -404,15 +678,29 @@ int main(int argc, char* argv[])
 		std::cout << "==== USING DR. SEIDEL METHOD ====" << std::endl;
 		box_dim_seidel(cloud, base_name, minEdgeLength);
 	}
+	else if (strcmp(argv[2], "seidel_avx") == 0)
+	{
+		std::cout << "==== USING DR. SEIDEL METHOD WITH AVX INSTRUCTIONS ====" << std::endl;
+		box_dim_seidel_avx(cloud, base_name, minEdgeLength);
+	}
+	else if (strcmp(argv[2], "seidel_sse") == 0)
+	{
+		std::cout << "==== USING DR. SEIDEL METHOD WITH SSE INSTRUCTIONS ====" << std::endl;
+		box_dim_seidel_sse(cloud, base_name, minEdgeLength);
+	}
 	else if (strcmp(argv[2], "cc") == 0)
 	{
 		std::cout << "==== USING CloudCompare METHOD ====" << std::endl;
 		box_dim_cc(cloud, base_name, minEdgeLength);
 	}
-	else
+	else if (strcmp(argv[2], "pcl") == 0)
 	{
 		std::cout << "==== USING PointCloudLibrary METHOD ====" << std::endl;
 		box_dim_pcl(cloud, base_name, minEdgeLength);
+	}
+	else
+	{
+		std::cout << "ERROR: Method not found, available methods are seidel, seidel_avx, cc, pcl" << std::endl;
 	}
 	//// find min/max coordinates manually
 	//float min_x, min_y, min_z;
