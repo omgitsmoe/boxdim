@@ -6,26 +6,37 @@
 #include <limits>
 #include <chrono>  // for function timer
 
+#if 0
 #include <immintrin.h>  // avx intrinsics
+#endif
 #include <xmmintrin.h>  // sse intrinsics
 
+#ifdef BOXDIM_WITH_OPEN_CL
 // #define CL_TARGET_OPENCL_VERSION 110  // OpenCL c bindings: target other than most-current version (2.2)
 // c bindings #include <CL/opencl.h>
 // c++ compile-time settings for target/min version
 #define CL_HPP_TARGET_OPENCL_VERSION 110
 #define CL_HPP_MINIMUM_OPENCL_VERSION 110
 #include <CL/cl2.hpp>
+#endif
 
 #include <Eigen/Core>
 
 #include <pcl/common/common.h>
-#include <pcl/octree/octree_pointcloud.h>
-#include <pcl/octree/octree_pointcloud_occupancy.h>
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
+#include <pcl/io/pcd_io.h>
+
+#ifdef BOXDIM_WITH_PCL_OCT
+#include <pcl/octree/octree_pointcloud.h>
+#include <pcl/octree/octree_pointcloud_occupancy.h>
+#endif
+
+#ifdef BOXDIM_WITH_TREETOP
 #include <pcl/filters/crop_box.h>
 #include <pcl/filters/passthrough.h>
-#include <pcl/io/pcd_io.h>
+#endif
+
 
 template<typename T>
 void print_vec(const std::vector<T>& vec)
@@ -209,6 +220,7 @@ void box_dim_seidel(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string
 	write_result(edgeLengths, voxelsRequired, out_filename);
 }
 
+#ifdef BOXDIM_WITH_OPEN_CL
 void box_dim_seidel_gpu(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string base_name, float minEdgeLength)
 {
 	//
@@ -427,7 +439,9 @@ void box_dim_seidel_gpu(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::st
 	std::cout << "Writing output csv: " << out_filename << std::endl;
 	write_result(edgeLengths, voxelsRequired, out_filename);
 }
+#endif
 
+#if 0
 void box_dim_seidel_avx(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string base_name, float minEdgeLength)
 {
 	Eigen::Vector4f min, max;
@@ -557,6 +571,7 @@ void box_dim_seidel_avx(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::st
 	std::cout << "Writing output csv: " << out_filename << std::endl;
 	write_result(edgeLengths, voxelsRequired, out_filename);
 }
+#endif
 
 /*
  SSE version is fastest, since too much overhead in packing and unpacking into 32-byte aligned arrays etc.
@@ -698,6 +713,7 @@ void box_dim_seidel_sse(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::st
 	write_result(edgeLengths, voxelsRequired, out_filename);
 }
 
+#ifdef BOXDIM_WITH_TREETOP
 void box_dim_seidel_sse_treetop(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string base_name, float minEdgeLength)
 {
 	Eigen::Vector4f min, max;
@@ -847,6 +863,7 @@ void box_dim_seidel_sse_treetop(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const
 	std::cout << "Writing output csv: " << out_filename << std::endl;
 	write_result(edgeLengths, voxelsRequired, out_filename);
 }
+#endif
 
 void box_dim_cc(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string base_name, float minEdgeLength)
 {
@@ -955,6 +972,7 @@ void box_dim_cc(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string bas
 	write_result(edgeLengths, voxelsRequired, out_filename);
 }
 
+#ifdef BOXDIM_WITH_PCL_OCT
 void box_dim_pcl(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string base_name, float minEdgeLength)
 {
 	Eigen::Vector4f min, max;
@@ -1024,6 +1042,7 @@ void box_dim_pcl(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string ba
 	print_vec(voxelsRequired2);
 
 }
+#endif
 
 // argv: 0: -, 1: minEdgeLength, 2: method (seidel, cc, pcl) 3: path to input file either ascii or pcd
 int main(int argc, char* argv[])
@@ -1032,7 +1051,9 @@ int main(int argc, char* argv[])
 	{
 
 		std::cout << "Usage: boxdim minEdgeLength methodName inputFilename" << std::endl;
-		std::cout << "       methods: seidel, cc, pcl" << std::endl;
+		// std::cout << "       methods: seidel (+ _avx, _sse, _sse_treetop, seidel_gpu), cc, pcl" << std::endl;
+		std::cout << "       methods: seidel (+ _sse), cc, pcl" << std::endl;
+
 		return 1;
 	}
 	float minEdgeLength = atof(argv[1]);
@@ -1076,39 +1097,48 @@ int main(int argc, char* argv[])
 		std::cout << "==== USING DR. SEIDEL METHOD ====" << std::endl;
 		box_dim_seidel(cloud, base_name, minEdgeLength);
 	}
+#if 0
 	else if (strcmp(argv[2], "seidel_avx") == 0)
 	{
 		std::cout << "==== USING DR. SEIDEL METHOD WITH AVX INSTRUCTIONS ====" << std::endl;
 		box_dim_seidel_avx(cloud, base_name, minEdgeLength);
 	}
+#endif
 	else if (strcmp(argv[2], "seidel_sse") == 0)
 	{
 		std::cout << "==== USING DR. SEIDEL METHOD WITH SSE INSTRUCTIONS ====" << std::endl;
 		box_dim_seidel_sse(cloud, base_name, minEdgeLength);
 	}
+#ifdef BOXDIM_WITH_TREETOP
 	else if (strcmp(argv[2], "seidel_sse_treetop") == 0)
 	{
 		std::cout << "==== USING DR. SEIDEL METHOD WITH SSE INSTRUCTIONS ====" << std::endl;
 		box_dim_seidel_sse_treetop(cloud, base_name, minEdgeLength);
 	}
+#endif
+#ifdef BOXDIM_WITH_OPEN_CL
 	else if (strcmp(argv[2], "seidel_gpu") == 0)
 	{
 		std::cout << "==== USING DR. SEIDEL METHOD ON THE GPU ====" << std::endl;
 		box_dim_seidel_gpu(cloud, base_name, minEdgeLength);
 	}
+#endif
 	else if (strcmp(argv[2], "cc") == 0)
 	{
 		std::cout << "==== USING CloudCompare METHOD ====" << std::endl;
 		box_dim_cc(cloud, base_name, minEdgeLength);
 	}
+#ifdef BOXDIM_WITH_PCL_OCT
 	else if (strcmp(argv[2], "pcl") == 0)
 	{
 		std::cout << "==== USING PointCloudLibrary METHOD ====" << std::endl;
 		box_dim_pcl(cloud, base_name, minEdgeLength);
 	}
+#endif
 	else
 	{
-		std::cout << "ERROR: Method not found, available methods are seidel, seidel_sse, seidel_sse_treetop, seidel_avx, seidel_gpu, cc, pcl" << std::endl;
+		std::cout << "ERROR: Method not found, available methods are "
+            << "seidel, seidel_sse, seidel_sse_treetop, cc" << std::endl;
 	}
 
 	auto stop = std::chrono::high_resolution_clock::now();
@@ -1137,24 +1167,6 @@ int main(int argc, char* argv[])
 	//std::cout << "Manual min: " << min_x << " " << min_y << " " << min_z << std::endl;
 	//std::cout << "Manual max: " << max_x << " " << max_y << " " << max_z << std::endl;
 	//std::cout << "Volume: " << (max_x - min_x) * (max_y - min_y) * (max_z - min_z) << std::endl;
-
-	// PCL OCTREE TEST
-
-	// constructor takes resolution: Octree resolution - side length of octree voxels
-	//pcl::octree::OctreePointCloud<pcl::PointXYZ> octree(edgeLengths[edgeLengths.size() - 1]);
-	//octree.setInputCloud(cloud);
-	//octree.addPointsFromInputCloud();
-
-	// iterate over nodes
-	//for (auto it = octree.begin(); it != octree.end(); ++it) {
-	//	if (it.isBranchNode()) {
-	//		std::cout << "branch" << std::endl;
-	//	}
-
-	//	if (it.isLeafNode()) {
-	//		std::cout << "leaf" << std::endl;
-	//	}
-	//}
 
 	return 0;
 }
