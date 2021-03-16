@@ -1047,16 +1047,39 @@ void box_dim_pcl(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::string ba
 // argv: 0: -, 1: minEdgeLength, 2: method (seidel, cc, pcl) 3: path to input file either ascii or pcd
 int main(int argc, char* argv[])
 {
-	if (argc < 4)
+    std::string min_edge_len;
+    std::string method_name;
+	std::string input_filename;
+	if (argc == 1)
+	{
+        std::cout << "Minimum edge length (e.g. 0.1): ";
+        std::cin >> min_edge_len;
+        std::cout << "Method name (seidel, seidel_sse [recommended], cc): ";
+        std::cin >> method_name;
+        // cin cin >> may leave \n or whitespace etc. which will be interpreted by getline
+        // as the user skipping the input
+        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        std::cout << "Path to input file (ASCII *.txt or *.pcd), e.g. D:\\research\\b32.pcd:" << std::endl;
+		// need to use getline since cin >> only reads till next whitespace
+        std::getline(std::cin, input_filename);
+    }
+    else if (argc < 4)
 	{
 
 		std::cout << "Usage: boxdim minEdgeLength methodName inputFilename" << std::endl;
 		// std::cout << "       methods: seidel (+ _avx, _sse, _sse_treetop, seidel_gpu), cc, pcl" << std::endl;
-		std::cout << "       methods: seidel (+ _sse), cc, pcl" << std::endl;
+		std::cout << "       methods: seidel (+ _sse), cc" << std::endl;
 
 		return 1;
 	}
-	float minEdgeLength = atof(argv[1]);
+    else
+    {
+        min_edge_len = argv[1];
+        method_name = argv[2];
+        input_filename = argv[3];
+    }
+
+	float minEdgeLength = atof(min_edge_len.c_str());
 	if (minEdgeLength <= 0)
 	{
 		std::cout << "Minimal edge length needs to be > 0" << std::endl;
@@ -1065,7 +1088,6 @@ int main(int argc, char* argv[])
 
 	auto start = std::chrono::high_resolution_clock::now();
 
-	std::string input_filename(argv[3]);
 	std::string base_name = input_filename.substr(0, input_filename.find_last_of('.'));
 	pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
 	if (boost::ends_with(input_filename, ".pcd"))
@@ -1092,7 +1114,7 @@ int main(int argc, char* argv[])
 		infile.close();
 	}
 
-	if (strcmp(argv[2], "seidel") == 0)
+	if (method_name == "seidel")
 	{
 		std::cout << "==== USING DR. SEIDEL METHOD ====" << std::endl;
 		box_dim_seidel(cloud, base_name, minEdgeLength);
@@ -1104,32 +1126,32 @@ int main(int argc, char* argv[])
 		box_dim_seidel_avx(cloud, base_name, minEdgeLength);
 	}
 #endif
-	else if (strcmp(argv[2], "seidel_sse") == 0)
+	else if (method_name == "seidel_sse")
 	{
 		std::cout << "==== USING DR. SEIDEL METHOD WITH SSE INSTRUCTIONS ====" << std::endl;
 		box_dim_seidel_sse(cloud, base_name, minEdgeLength);
 	}
 #ifdef BOXDIM_WITH_TREETOP
-	else if (strcmp(argv[2], "seidel_sse_treetop") == 0)
+	else if (method_name == "seidel_sse_treetop")
 	{
 		std::cout << "==== USING DR. SEIDEL METHOD WITH SSE INSTRUCTIONS ====" << std::endl;
 		box_dim_seidel_sse_treetop(cloud, base_name, minEdgeLength);
 	}
 #endif
 #ifdef BOXDIM_WITH_OPEN_CL
-	else if (strcmp(argv[2], "seidel_gpu") == 0)
+	else if (method_name == "seidel_gpu")
 	{
 		std::cout << "==== USING DR. SEIDEL METHOD ON THE GPU ====" << std::endl;
 		box_dim_seidel_gpu(cloud, base_name, minEdgeLength);
 	}
 #endif
-	else if (strcmp(argv[2], "cc") == 0)
+	else if (method_name == "cc")
 	{
 		std::cout << "==== USING CloudCompare METHOD ====" << std::endl;
 		box_dim_cc(cloud, base_name, minEdgeLength);
 	}
 #ifdef BOXDIM_WITH_PCL_OCT
-	else if (strcmp(argv[2], "pcl") == 0)
+	else if (method_name == "pcl")
 	{
 		std::cout << "==== USING PointCloudLibrary METHOD ====" << std::endl;
 		box_dim_pcl(cloud, base_name, minEdgeLength);
@@ -1138,7 +1160,7 @@ int main(int argc, char* argv[])
 	else
 	{
 		std::cout << "ERROR: Method not found, available methods are "
-            << "seidel, seidel_sse, seidel_sse_treetop, cc" << std::endl;
+            << "seidel, seidel_sse, cc" << std::endl;
 	}
 
 	auto stop = std::chrono::high_resolution_clock::now();
@@ -1167,6 +1189,13 @@ int main(int argc, char* argv[])
 	//std::cout << "Manual min: " << min_x << " " << min_y << " " << min_z << std::endl;
 	//std::cout << "Manual max: " << max_x << " " << max_y << " " << max_z << std::endl;
 	//std::cout << "Volume: " << (max_x - min_x) * (max_y - min_y) * (max_z - min_z) << std::endl;
+
+    if (argc == 1) {
+        // force to keep console window open for users that just clicked the exe
+        std::cout << std::endl << "Press <ENTER> to close!" << std::endl;
+        std::string dummy;
+        std::getline(std::cin, dummy);
+    }
 
 	return 0;
 }
